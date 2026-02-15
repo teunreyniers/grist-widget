@@ -22,13 +22,13 @@
         </template>
       </div>
       <template v-else>
-        <div class="container">
-          <button class="button" v-for="(input, idx) in inputs" v-on:click="applyActions(input.actions)" v-on:mouseover="desc = idx" v-on:mouseleave="desc = null">
-            {{ input.button }}
+        <div class="container" v-for="record in records">
+          <button class="button" v-for="(btn, idx) in record.buttons" v-on:click="applyActions(btn.actions)" v-on:mouseover="desc = record.id + '-' + idx" v-on:mouseleave="desc = null">
+            {{ btn.button }}
           </button>
         </div>
-        <div class="description" v-for="(input, idx) in inputs" v-if="desc === idx">{{ input.description }}</div>
-        <div class="result" v-if="result">{{ input.result }}</div>
+        <div class="description" v-for="record in records" v-for="(btn, idx) in record.buttons" v-if="desc === record.id + '-' + idx">{{ btn.description }}</div>
+        <div class="result" v-if="result">{{ result }}</div>
       </template>
     </div>
   </body>
