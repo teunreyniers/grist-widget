@@ -9,6 +9,7 @@ const urlParams = new URLSearchParams(window.location.search);
 const isReadOnly = urlParams.get('readonly') === 'true' ||
   (urlParams.has('access') && urlParams.get('access') !== 'full');
 const docTimeZone = urlParams.get('timeZone');
+const colTypeParam = urlParams.get('colType');
 
 // Expose a few test variables on `window`.
 window.gristCalendar = {
@@ -506,7 +507,7 @@ async function configureGristSettings() {
 
   // bind columns mapping options to the GUI
   const columnsMappingOptions = getGristOptions();
-  grist.ready({requiredAccess: 'full', columns: columnsMappingOptions, allowSelectBy: true});
+  grist.ready({requiredAccess: isReadOnly ? 'read table' : 'full', columns: columnsMappingOptions, allowSelectBy: true});
 }
 
 async function translatePage() {
@@ -781,51 +782,62 @@ function isZeroTime(date) {
 class ColTypesFetcher {
   // Returns array of column records for the array of colIds.
   static async getTypes(tableId, colIds) {
-    const tables = await grist.docApi.fetchTable('_grist_Tables');
-    const columns = await grist.docApi.fetchTable('_grist_Tables_column');
-    const fields = Object.keys(columns);
-    const tableRef = tables.id[tables.tableId.indexOf(tableId)];
-    return colIds.map(colId => {
-      const index = columns.id.findIndex((id, i) => (columns.parentId[i] === tableRef && columns.colId[i] === colId));
-      if (index === -1) { return null; }
-      return Object.fromEntries(fields.map(f => [f, columns[f][index]]));
-    });
+    try {
+      const tables = await grist.docApi.fetchTable('_grist_Tables');
+      const columns = await grist.docApi.fetchTable('_grist_Tables_column');
+      const fields = Object.keys(columns);
+      const tableRef = tables.id[tables.tableId.indexOf(tableId)];
+      return colIds.map(colId => {
+        if (!colId) { return null; }
+        const index = columns.id.findIndex((id, i) => (columns.parentId[i] === tableRef && columns.colId[i] === colId));
+        if (index === -1) { return null; }
+        return Object.fromEntries(fields.map(f => [f, columns[f][index]]));
+      });
+    } catch (err) {
+      console.warn('Failed to fetch column metadata:', err);
+      return colIds.map(() => null);
+    }
   }
 
   constructor() {
     this._tableId = null;
     this._colIds = null;
-    this._colTypesPromise = Promise.resolve([null, null]);
+    this._colTypesPromise = Promise.resolve([null, null, null]);
     this._accessLevel = 'full';
   }
   setAccessLevel(accessLevel) {
     this._accessLevel = accessLevel;
   }
+  _shouldFetch() {
+    if (this._accessLevel !== 'full') { return false; }
+    if (colTypeParam && !this._colIds?.[2]) { return false; }
+    return true;
+  }
+  _triggerFetch() {
+    if (!this._shouldFetch() || !this._tableId || !this._colIds) { return; }
+    this._colTypesPromise = ColTypesFetcher.getTypes(this._tableId, this._colIds);
+  }
   gotMappings(mappings) {
-    // Can't fetch metadata when no full access.
-    if (this._accessLevel !== 'full') { return; }
     if (!this._colIds || !(
         mappings.startDate === this._colIds[0] &&
         mappings.endDate === this._colIds[1] &&
         mappings.type === this._colIds[2]
       )) {
       this._colIds = [mappings.startDate, mappings.endDate, mappings.type];
-      if (this._tableId) {
-        this._colTypesPromise = ColTypesFetcher.getTypes(this._tableId, this._colIds);
-      }
+      this._triggerFetch();
     }
   }
   gotNewMappings(tableId) {
-    // Can't fetch metadata when no full access.
-    if (this._accessLevel !== 'full') { return; }
     this._tableId = tableId;
-    if (this._colIds) {
-      this._colTypesPromise = ColTypesFetcher.getTypes(this._tableId, this._colIds);
-    }
+    this._triggerFetch();
   }
 
   async getColTypes() {
-    return this._colTypesPromise.then(types => types.map(t => t?.type));
+    if (colTypeParam) {
+      const type = colTypeParam === 'date' ? 'Date' : 'DateTime';
+      return [type, type];
+    }
+    return this._colTypesPromise.then(types => types.map(t => t?.type ?? 'DateTime'));
   }
 
   async getColOptions() {
