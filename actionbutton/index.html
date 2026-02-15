@@ -27,7 +27,9 @@
             {{ btn.button }}
           </button>
         </div>
-        <div class="description" v-for="record in records" v-for="(btn, idx) in record.buttons" v-if="desc === record.id + '-' + idx">{{ btn.description }}</div>
+        <template v-for="record in records">
+          <div class="description" v-for="(btn, idx) in record.buttons" v-if="desc === record.id + '-' + idx">{{ btn.description }}</div>
+        </template>
         <div class="result" v-if="result">{{ result }}</div>
       </template>
     </div>
