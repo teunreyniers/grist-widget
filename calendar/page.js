@@ -261,6 +261,7 @@ class CalendarHandler {
 
     container.addEventListener('mousedown', () => {
       focusWidget();
+      this._userInteracted = true;
       // Clear existing selection; this follows the suggested workaround in
       // https://github.com/nhn/tui.calendar/issues/1300#issuecomment-1273902472
       this.calendar.clearGridSelections();
@@ -295,9 +296,10 @@ class CalendarHandler {
     // Ids of visible events that fall within the current date range. */
     this._visibleEventIds = new Set();
 
-    // Whether we've handled the initial cursor record yet. On open we keep the
-    // calendar on the current week rather than jumping to the selected record.
-    this._initialRecordHandled = false;
+    // Whether the user has interacted with the calendar yet. Until they do, we
+    // keep the calendar on the current week instead of jumping to the record
+    // selected in a linked table when the widget first opens.
+    this._userInteracted = false;
   }
 
   _isMultidayInMonthViewEvent(rec)  {
@@ -320,12 +322,12 @@ class CalendarHandler {
     }
     const [startType] = await colTypesFetcher.getColTypes();
     const startDate = getAdjustedDate(record.startDate, startType);
-    // On open, leave the calendar on the current week instead of navigating to
-    // the initially-selected cursor record. Later selections still navigate.
-    if (this._initialRecordHandled) {
+    // Only navigate to the selected record once the user has interacted with
+    // the calendar. This keeps the current week shown when the widget first
+    // opens, instead of jumping to whatever record is selected in a linked
+    // table. The record is still highlighted if it falls in the current view.
+    if (this._userInteracted) {
       this.calendar.setDate(startDate);
-    } else {
-      this._initialRecordHandled = true;
     }
     this._selectedRecordId = record.id;
     updateUIAfterNavigation();
@@ -384,18 +386,21 @@ class CalendarHandler {
 
   // navigate to the previous time period
   calendarPrevious() {
+    this._userInteracted = true;
     this.calendar.prev();
     updateUIAfterNavigation();
   }
 
   // navigate to the next time period
   calendarNext() {
+    this._userInteracted = true;
     this.calendar.next();
     updateUIAfterNavigation();
   }
 
   //navigate to today
   calendarToday() {
+    this._userInteracted = true;
     this.calendar.today();
     updateUIAfterNavigation();
   }
@@ -593,6 +598,7 @@ function gristSelectedRecordChanged(record, mappings) {
 // when a user changes the perspective in the GUI, we want to save it as grist option
 // - rest of logic is in reaction to the grist option changed
 async function calendarViewChanges(radiobutton) {
+  calendarHandler._userInteracted = true;
   changeCalendarView(radiobutton.value);
   if (!isReadOnly) {
     await grist.setOption('calendarViewPerspective', radiobutton.value);
