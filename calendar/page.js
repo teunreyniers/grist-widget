@@ -294,6 +294,10 @@ class CalendarHandler {
 
     // Ids of visible events that fall within the current date range. */
     this._visibleEventIds = new Set();
+
+    // Whether we've handled the initial cursor record yet. On open we keep the
+    // calendar on the current week rather than jumping to the selected record.
+    this._initialRecordHandled = false;
   }
 
   _isMultidayInMonthViewEvent(rec)  {
@@ -316,7 +320,13 @@ class CalendarHandler {
     }
     const [startType] = await colTypesFetcher.getColTypes();
     const startDate = getAdjustedDate(record.startDate, startType);
-    this.calendar.setDate(startDate);
+    // On open, leave the calendar on the current week instead of navigating to
+    // the initially-selected cursor record. Later selections still navigate.
+    if (this._initialRecordHandled) {
+      this.calendar.setDate(startDate);
+    } else {
+      this._initialRecordHandled = true;
+    }
     this._selectedRecordId = record.id;
     updateUIAfterNavigation();
 
