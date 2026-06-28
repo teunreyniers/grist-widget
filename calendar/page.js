@@ -11,6 +11,12 @@ const isReadOnly = urlParams.get('readonly') === 'true' ||
 const docTimeZone = urlParams.get('timeZone');
 const colTypeParam = urlParams.get('colType');
 
+// Most recent column mappings (widget name -> grist colId) and the calendar's
+// own tableId. Used to write the extra event fields and to resolve the user
+// reference options.
+let latestMappings = null;
+let latestTableId = null;
+
 // Expose a few test variables on `window`.
 window.gristCalendar = {
   calendarHandler,
@@ -250,8 +256,9 @@ class CalendarHandler {
       setTimeout(() => container.querySelector('input[name=title]')?.focus(), 0);
     });
 
-    // Creation happens via the event-edit form.
-    this.calendar.on('beforeCreateEvent', (eventInfo) => upsertEvent(eventInfo));
+    // Creation happens via the event-edit form. Snapshot the extra-field values
+    // synchronously here, before the popup closes and clears them.
+    this.calendar.on('beforeCreateEvent', (eventInfo) => upsertEvent(eventInfo, this._pendingExtra));
 
     // Updates happen via the form or when dragging the event or its end-time.
     this.calendar.on('beforeUpdateEvent', (update) => upsertEvent({id: update.event.id, ...update.changes}));
@@ -287,6 +294,27 @@ class CalendarHandler {
         // it simple, since only one button will be present in practice.
         container.querySelector('button.toastui-calendar-edit-button')?.click();
         container.querySelector('button.toastui-calendar-popup-confirm')?.click();
+      } else if (!isReadOnly && (ev.key === 'Delete' || ev.key === 'Backspace')) {
+        // Delete the currently selected (highlighted) event. Undo is available via
+        // Ctrl/Cmd+Z (enableKeyboardShortcuts).
+        const target = ev.target;
+        const isEditing = target && (
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable
+        );
+        // Don't interfere with text editing or while a popup is open.
+        if (isEditing || container.querySelector('.toastui-calendar-popup-container')) { return; }
+        // Only delete an event that's actually shown (and highlighted) in the
+        // current view, so a Delete press can't remove an off-screen record that
+        // happens to be selected via linking.
+        if (this._selectedRecordId && this._visibleEventIds.has(this._selectedRecordId)) {
+          ev.preventDefault();
+          const idToDelete = this._selectedRecordId;
+          this._selectedRecordId = null;
+          deleteEvent({id: idToDelete});
+        }
       }
     });
 
@@ -300,6 +328,38 @@ class CalendarHandler {
     // keep the calendar on the current week instead of jumping to the record
     // selected in a linked table when the widget first opens.
     this._userInteracted = false;
+
+    // Values from the extra fields (users/activity) injected into the create
+    // popup, captured while the popup is open and consumed on save.
+    this._pendingExtra = null;
+
+    // Inject the extra fields when the create popup opens, and clear the pending
+    // values when it closes.
+    this._popupObserver = new MutationObserver(() => {
+      if (container.querySelector('.toastui-calendar-form-container')) {
+        // The title field is hidden (see screen.css) but ToastUI marks it
+        // `required`, which blocks form submission on a hidden control. Drop the
+        // constraint so the popup can save with an empty (defaulted) title.
+        const titleInput = container.querySelector('input[name="title"]');
+        if (titleInput) { titleInput.required = false; }
+        injectExtraFields(container);
+      } else {
+        this._pendingExtra = null;
+      }
+    });
+    this._popupObserver.observe(container, {childList: true, subtree: true});
+  }
+
+  // Default user(s) for a new event: the row id(s) shared by every event
+  // currently shown. When the calendar is linked/filtered on the users column,
+  // this is the filtered user. Returns [] when there's no common user.
+  getDefaultUsers() {
+    const lists = [];
+    for (const event of this._allEvents.values()) {
+      if (event.users && event.users.length) { lists.push(event.users); }
+    }
+    if (!lists.length) { return []; }
+    return lists.reduce((acc, list) => acc.filter(id => list.includes(id)));
   }
 
   _isMultidayInMonthViewEvent(rec)  {
@@ -526,6 +586,22 @@ function getGristOptions() {
       type: "Text,Any",
       description: t("event background color"),
       allowMultiple: false
+    },
+    {
+      name: "users",
+      title: t("Users"),
+      optional: true,
+      type: "RefList",
+      description: t("people linked to the event"),
+      allowMultiple: false
+    },
+    {
+      name: "activity",
+      title: t("Activity"),
+      optional: true,
+      type: "Text",
+      description: t("activity link"),
+      allowMultiple: false
     }
   ];
 }
@@ -550,6 +626,10 @@ async function configureGristSettings() {
 
   // To get types, we need to know the tableId. This is a way to get it.
   grist.on('message', (e) => {
+    if (e.tableId) {
+      latestTableId = e.tableId;
+      usersResolver.update(latestTableId, latestMappings?.users);
+    }
     if (e.tableId && e.mappingsChange) { colTypesFetcher.gotNewMappings(e.tableId); }
   });
 
@@ -685,7 +765,7 @@ function makeGristDateTime(tzDate, colType) {
   }
 }
 
-async function upsertEvent(tuiEvent) {
+async function upsertEvent(tuiEvent, extra) {
   // conversion between calendar event object and grist flat format (so the one that is returned in onRecords event
   // and can be mapped by grist.mapColumnNamesBack)
   // tuiEvent can be partial: only the fields present will be updated in Grist.
@@ -696,7 +776,19 @@ async function upsertEvent(tuiEvent) {
     startDate: tuiEvent.start ? makeGristDateTime(tuiEvent.start, startType) : undefined,
     endDate: tuiEvent.end ? makeGristDateTime(tuiEvent.end, endType) : undefined,
     isAllDay: tuiEvent.isAllday !== undefined ? (tuiEvent.isAllday ? 1 : 0) : undefined,
-    title: tuiEvent.title !== undefined ? (tuiEvent.title || "New Event") : undefined,
+    // The title column is read-only (it's a formula used only to render the event
+    // label on the calendar), so it is never written back to Grist.
+  }
+  // Extra fields are only set when creating an event (no id) from the popup, and
+  // only when they actually have a value — so we never write empty defaults to a
+  // mapped column (which fails if it happens to be a formula column).
+  if (!tuiEvent.id && extra) {
+    if (latestMappings?.users && extra.users?.length) {
+      gristEvent.users = ['L', ...extra.users];
+    }
+    if (latestMappings?.activity && extra.activity) {
+      gristEvent.activity = extra.activity;
+    }
   }
   upsertGristRecord(gristEvent);
 }
@@ -792,6 +884,8 @@ function buildCalendarEventObject(record, colTypes, colOptions) {
     id: record.id,
     calendarId: CALENDAR_NAME,
     title: record.title,
+    // Row ids of linked users, used to infer the default for new events.
+    users: normalizeRefList(record.users),
     start,
     end,
     isAllday,
@@ -814,7 +908,11 @@ function buildCalendarEventObject(record, colTypes, colOptions) {
 
 // when some CRUD operation is performed on the table, we want to update the calendar
 async function updateCalendar(records, mappings) {
-  if (mappings) { colTypesFetcher.gotMappings(mappings); }
+  if (mappings) {
+    colTypesFetcher.gotMappings(mappings);
+    latestMappings = mappings;
+    usersResolver.update(latestTableId, mappings.users);
+  }
 
   const mappedRecords = grist.mapColumnNames(records, mappings);
   // if any records were successfully mapped, create or update them in the calendar
@@ -909,6 +1007,142 @@ class ColTypesFetcher {
 }
 
 const colTypesFetcher = new ColTypesFetcher();
+
+// Normalize a Reference List cell value to a plain array of row ids. The plugin
+// API decodes a RefList to `[id1, id2, ...]`, but we also tolerate the encoded
+// `['L', id1, id2, ...]` form and a single Reference (`id` or `['R', ..., id]`).
+function normalizeRefList(value) {
+  if (Array.isArray(value)) {
+    const arr = (value[0] === 'L' || value[0] === 'R' || value[0] === 'r')
+      ? value.slice(value[0] === 'L' ? 1 : value.length - 1)
+      : value;
+    return arr.filter(v => typeof v === 'number');
+  }
+  if (typeof value === 'number') { return [value]; }
+  return [];
+}
+
+// Resolves the selectable user options for the `users` RefList column: finds the
+// referenced table and its display column, then fetches the labelled rows.
+async function resolveUserOptions(tableId, usersColId) {
+  if (!tableId || !usersColId) { return []; }
+  try {
+    const tables = await grist.docApi.fetchTable('_grist_Tables');
+    const columns = await grist.docApi.fetchTable('_grist_Tables_column');
+    const tableRef = tables.id[tables.tableId.indexOf(tableId)];
+    const colIndex = columns.id.findIndex(
+      (id, i) => columns.parentId[i] === tableRef && columns.colId[i] === usersColId);
+    if (colIndex === -1) { return []; }
+
+    // type is like "RefList:People" or "Ref:People".
+    const targetTableId = String(columns.type[colIndex] || '').split(':')[1];
+    if (!targetTableId) { return []; }
+
+    // Resolve the display column's colId from visibleCol (a column row id).
+    let displayColId = null;
+    const visibleCol = columns.visibleCol[colIndex];
+    if (visibleCol) {
+      const vIndex = columns.id.indexOf(visibleCol);
+      if (vIndex !== -1) { displayColId = columns.colId[vIndex]; }
+    }
+
+    const refData = await grist.docApi.fetchTable(targetTableId);
+    const labels = displayColId && refData[displayColId] ? refData[displayColId] : refData.id;
+    return refData.id.map((rowId, i) => ({rowId, label: String(labels[i] ?? rowId)}));
+  } catch (err) {
+    console.warn('Failed to resolve user options:', err);
+    return [];
+  }
+}
+
+// Caches the resolved user options and refreshes them when the table or the
+// mapped `users` column changes.
+const usersResolver = {
+  _key: null,
+  _options: [],
+  async update(tableId, usersColId) {
+    // The options are only needed for the create popup, which is hidden when
+    // the widget is read-only.
+    if (isReadOnly) { return; }
+    const key = tableId && usersColId ? `${tableId}|${usersColId}` : null;
+    if (key === this._key) { return; }
+    this._key = key;
+    if (!key) { this._options = []; return; }
+    const options = await resolveUserOptions(tableId, usersColId);
+    // Guard against a race with a newer update().
+    if (this._key === key) { this._options = options; }
+  },
+  getOptions() { return this._options; },
+};
+
+// Injects the extra "Users" and "Activity" fields into the ToastUI event-creation
+// form popup. Idempotent: only injects once per open popup, and only the fields
+// whose columns are mapped.
+function injectExtraFields(container) {
+  const form = container.querySelector('.toastui-calendar-form-container');
+  if (!form || form.querySelector('.grist-extra-fields')) { return; }
+
+  const usersMapped = Boolean(latestMappings?.users);
+  const activityMapped = Boolean(latestMappings?.activity);
+  if (!usersMapped && !activityMapped) { return; }
+
+  const pending = {
+    users: usersMapped ? calendarHandler.getDefaultUsers() : [],
+    activity: '',
+  };
+  calendarHandler._pendingExtra = pending;
+
+  const section = document.createElement('div');
+  section.className = 'grist-extra-fields';
+
+  if (usersMapped) {
+    const field = document.createElement('div');
+    field.className = 'grist-extra-field';
+    const label = document.createElement('label');
+    label.textContent = t('Users');
+    const select = document.createElement('select');
+    select.className = 'grist-users-select';
+    select.multiple = true;
+    select.size = Math.min(Math.max(usersResolver.getOptions().length, 2), 5);
+    for (const opt of usersResolver.getOptions()) {
+      const option = document.createElement('option');
+      option.value = String(opt.rowId);
+      option.textContent = opt.label;
+      if (pending.users.includes(opt.rowId)) { option.selected = true; }
+      select.appendChild(option);
+    }
+    select.addEventListener('change', () => {
+      pending.users = Array.from(select.selectedOptions).map(o => Number(o.value));
+    });
+    field.appendChild(label);
+    field.appendChild(select);
+    section.appendChild(field);
+  }
+
+  if (activityMapped) {
+    const field = document.createElement('div');
+    field.className = 'grist-extra-field';
+    const label = document.createElement('label');
+    label.textContent = t('Activity');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'grist-activity-input';
+    input.addEventListener('input', () => { pending.activity = input.value; });
+    field.appendChild(label);
+    field.appendChild(input);
+    section.appendChild(field);
+  }
+
+  // Insert right before the confirm-button section so it reads as the last
+  // group of inputs in the form.
+  const buttonSection = form.querySelector('.toastui-calendar-popup-button.toastui-calendar-popup-confirm')
+    ?.closest('.toastui-calendar-popup-section');
+  if (buttonSection && buttonSection.parentElement) {
+    buttonSection.parentElement.insertBefore(section, buttonSection);
+  } else {
+    form.appendChild(section);
+  }
+}
 
 function safeParse(value) {
   try {

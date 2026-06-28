@@ -32,6 +32,10 @@
   "Highlight": "Highlight",
   "highlight event with yellow background": "Highlight event with yellow background",
   "Color": "Color",
-  "event background color": "Event background color"
+  "event background color": "Event background color",
+  "Users": "Users",
+  "people linked to the event": "People linked to the event",
+  "Activity": "Activity",
+  "activity link": "Activity link"
 
 }

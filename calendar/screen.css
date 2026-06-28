@@ -133,11 +133,54 @@ body {
   display: none;
 }
 
+/* Hide the title field in the new-event popup. The input stays in the DOM (so the
+   event still submits and defaults to "New Event"); only the section is hidden.
+   display:none does not affect the :nth-child counting used by the rules above. */
+.toastui-calendar-form-container .toastui-calendar-popup-section:has(input[name="title"]) {
+  display: none;
+}
+
 .readonly .toastui-calendar-detail-container .toastui-calendar-edit-button,
 .readonly .toastui-calendar-detail-container .toastui-calendar-delete-button {
   opacity: 0.4;
   cursor: default;
   pointer-events: none;
+}
+
+/* Extra fields (Users / Activity) injected into the event-creation popup. */
+.grist-extra-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 8px;
+}
+.grist-extra-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.grist-extra-field label {
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+  color: var(--grist-theme-text-light);
+}
+.grist-extra-field select,
+.grist-extra-field input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--grist-theme-input-border);
+  background-color: var(--grist-theme-input-bg);
+  color: var(--grist-theme-text);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 13px;
+}
+.grist-extra-field select.grist-users-select {
+  padding: 2px;
+}
+.grist-extra-field select.grist-users-select option:checked {
+  background-color: var(--grist-theme-selection);
 }
 
 .toastui-calendar-popup-section-item {
