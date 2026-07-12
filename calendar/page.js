@@ -295,6 +295,9 @@ class CalendarHandler {
         container.querySelector('button.toastui-calendar-edit-button')?.click();
         container.querySelector('button.toastui-calendar-popup-confirm')?.click();
       } else if (!isReadOnly && (ev.key === 'Delete' || ev.key === 'Backspace')) {
+        // Prevent the browser's default Backspace behavior (back navigation)
+        // which would change the active view date in some environments.
+        ev.preventDefault();
         // Delete the currently selected (highlighted) event. Undo is available via
         // Ctrl/Cmd+Z (enableKeyboardShortcuts).
         const target = ev.target;
@@ -310,7 +313,7 @@ class CalendarHandler {
         // current view, so a Delete press can't remove an off-screen record that
         // happens to be selected via linking.
         if (this._selectedRecordId && this._visibleEventIds.has(this._selectedRecordId)) {
-          ev.preventDefault();
+          this._skipNextRecordNavigation = true;
           const idToDelete = this._selectedRecordId;
           this._selectedRecordId = null;
           deleteEvent({id: idToDelete});
@@ -328,6 +331,10 @@ class CalendarHandler {
     // keep the calendar on the current week instead of jumping to the record
     // selected in a linked table when the widget first opens.
     this._userInteracted = false;
+
+    // Set to true after a deletion to prevent selectRecord from navigating
+    // the calendar to Grist's auto-selected next record.
+    this._skipNextRecordNavigation = false;
 
     // Values from the extra fields (users/activity) injected into the create
     // popup, captured while the popup is open and consumed on save.
@@ -386,9 +393,12 @@ class CalendarHandler {
     // the calendar. This keeps the current week shown when the widget first
     // opens, instead of jumping to whatever record is selected in a linked
     // table. The record is still highlighted if it falls in the current view.
-    if (this._userInteracted) {
+    // Navigation is also skipped after a deletion to avoid jumping to an
+    // auto-selected next record.
+    if (this._userInteracted && !this._skipNextRecordNavigation) {
       this.calendar.setDate(startDate);
     }
+    this._skipNextRecordNavigation = false;
     this._selectedRecordId = record.id;
     updateUIAfterNavigation();
 
